@@ -472,16 +472,102 @@ let S = {  // session
 // ══════════════════════════════════════════════════════
 // STORAGE
 // ══════════════════════════════════════════════════════
-function saveG(){
-  try{ localStorage.setItem('pgq2_state', JSON.stringify(G)); }catch(e){}
+// ── IndexedDB helpers ──
+const IDB_NAME = 'PinnacleQuiz';
+const IDB_STORE = 'state';
+const IDB_KEY = 'pgq2_state';
+let _idb = null;
+
+function openIDB(){
+  return new Promise((resolve, reject) => {
+    if(_idb){ resolve(_idb); return; }
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = e => {
+      e.target.result.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = e => { _idb = e.target.result; resolve(_idb); };
+    req.onerror   = e => reject(e);
+  });
 }
+
+function idbSet(data){
+  openIDB().then(db => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(JSON.stringify(data), IDB_KEY);
+  }).catch(()=>{});
+}
+
+function idbGet(){
+  return openIDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(IDB_KEY);
+      req.onsuccess = e => resolve(e.target.result ? JSON.parse(e.target.result) : null);
+      req.onerror   = e => reject(e);
+    });
+  }).catch(() => null);
+}
+
+// ── Save: write to BOTH localStorage AND IndexedDB ──
+function saveG(){
+  const data = JSON.stringify(G);
+  // 1. localStorage (fast, immediate)
+  try{ localStorage.setItem('pgq2_state', data); }catch(e){}
+  // 2. IndexedDB (permanent locker — survives cache clears)
+  idbSet(G);
+}
+
+// ── Load: try localStorage first, fall back to IndexedDB ──
 function loadG(){
+  // Step 1: try localStorage (instant, synchronous)
   try{
-    const d = JSON.parse(localStorage.getItem('pgq2_state')||'null');
-    if(d){ G = {...G,...d}; G.seenIds=d.seenIds||[]; G.topicStats=d.topicStats||{}; }
-    const today = new Date().toDateString();
-    if(G.todayDate !== today){ G.todayDone=0; G.todayDate=today; }
+    const raw = localStorage.getItem('pgq2_state');
+    if(raw){
+      const d = JSON.parse(raw);
+      G = {...G,...d};
+      G.seenIds    = d.seenIds    || [];
+      G.topicStats = d.topicStats || {};
+      const today  = new Date().toDateString();
+      if(G.todayDate !== today){ G.todayDone = 0; G.todayDate = today; }
+      // Also write to IndexedDB silently (keep it in sync)
+      idbSet(G);
+      return; // got data, done
+    }
   }catch(e){}
+
+  // Step 2: localStorage was empty (cache was cleared!) — restore from IndexedDB
+  idbGet().then(d => {
+    if(d){
+      G = {...G,...d};
+      G.seenIds    = d.seenIds    || [];
+      G.topicStats = d.topicStats || {};
+      const today  = new Date().toDateString();
+      if(G.todayDate !== today){ G.todayDone = 0; G.todayDate = today; }
+      // Restore back into localStorage too
+      try{ localStorage.setItem('pgq2_state', JSON.stringify(G)); }catch(e){}
+      // Refresh UI now that data is loaded
+      renderHome();
+      if(document.getElementById('stats-screen').classList.contains('active')) renderStats();
+      showCacheRestoreToast();
+    }
+  }).catch(()=>{});
+}
+
+function showCacheRestoreToast(){
+  // Small banner at top of home screen telling user data was auto-restored
+  const existing = document.getElementById('restore-toast');
+  if(existing) return;
+  const div = document.createElement('div');
+  div.id = 'restore-toast';
+  div.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:999;
+    background:linear-gradient(135deg,#1a3326,#0d2318);
+    border-bottom:1px solid rgba(61,184,92,0.4);
+    color:#4dbe74;font-size:12px;font-weight:700;
+    padding:10px 16px;text-align:center;
+    animation:factSlide 0.4s ease;`;
+  div.textContent = '✅ Progress auto-restored from backup locker!';
+  document.body.appendChild(div);
+  setTimeout(()=>{ if(div.parentNode) div.parentNode.removeChild(div); }, 3500);
 }
 
 // ══════════════════════════════════════════════════════
@@ -913,8 +999,9 @@ function importBackup(event){
       delete data._version;
       delete data._totalMCQs;
 
-      // Save to localStorage
+      // Save to BOTH localStorage AND IndexedDB
       localStorage.setItem('pgq2_state', JSON.stringify(data));
+      idbSet(data);
 
       // Reload global state
       loadG();
