@@ -273,6 +273,16 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .tac-weak-label{font-size:10px;color:var(--red);font-weight:700;margin-top:4px;display:flex;align-items:center;gap:4px;}
 .tac-start-btn{font-size:11px;color:var(--blue);font-weight:700;margin-top:4px;cursor:pointer;}
 
+/* Performance Graph */
+.perf-graph-card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:14px;border:1px solid var(--border);}
+.pg-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.pg-title{font-size:13px;font-weight:700;}
+.pg-legend{font-size:11px;color:var(--sub);}
+.pg-svg-wrap{width:100%;overflow:hidden;}
+.pg-empty{text-align:center;padding:24px;color:var(--sub);font-size:13px;}
+.pg-day-labels{display:flex;justify-content:space-between;padding:0 4px;margin-top:4px;}
+.pg-day-lbl{font-size:9px;color:var(--sub2);text-align:center;flex:1;}
+
 /* Backup / Restore buttons */
 .backup-section{padding:16px 14px 24px;border-top:1px solid var(--border);margin-top:6px;}
 .backup-label{font-size:11px;font-weight:700;color:var(--sub2);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;display:flex;align-items:center;gap:6px;}
@@ -376,7 +386,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       </div>
       <div class="oa-bar"><div class="oa-fill" id="oa-fill" style="width:0%"></div></div>
     </div>
-    <div class="sec-label">📈 Topic-wise Accuracy <span style="font-size:10px;color:var(--red);font-weight:normal;">⬆️ Weakest first</span></div>
+    <div class="sec-label">📈 Performance (Last 7 Days)</div>
+    <div class="perf-graph-card">
+      <div class="pg-header">
+        <div class="pg-title">Daily Accuracy %</div>
+        <div class="pg-legend" id="pg-legend">—</div>
+      </div>
+      <div class="pg-svg-wrap" id="pg-svg-wrap">
+        <div class="pg-empty" id="pg-empty">Practice for a few days to see your graph 📊</div>
+      </div>
+      <div class="pg-day-labels" id="pg-day-labels"></div>
+    </div>
+
+    <div class="sec-label">📊 Topic-wise Accuracy <span style="font-size:10px;color:var(--red);font-weight:normal;">⬆️ Weakest first</span></div>
     <div class="topic-acc-list" id="topic-acc-list"></div>
   </div>
 
@@ -458,6 +480,7 @@ let G = {
   wrongQueue:[],   // [{id, wrongAt}]
   seenIds:[],
   topicStats:{},   // {topic: {done, correct}}
+  dailyLog:[],     // [{date, done, correct}] last 30 days
 };
 
 let S = {  // session
@@ -510,6 +533,18 @@ function idbGet(){
 
 // ── Save: write to BOTH localStorage AND IndexedDB ──
 function saveG(){
+  // Update dailyLog with today's snapshot
+  const today = new Date().toDateString();
+  const log = G.dailyLog || [];
+  const todayIdx = log.findIndex(d=>d.date===today);
+  const snap = {date:today, done:G.todayDone, correct: G.topicStats
+    ? Object.values(G.topicStats).reduce((s,t)=>s+t.correct,0) : G.totalCorrect,
+    total: G.totalDone};
+  if(todayIdx > -1) log[todayIdx] = snap;
+  else log.push(snap);
+  // Keep last 30 days only
+  G.dailyLog = log.slice(-30);
+
   const data = JSON.stringify(G);
   // 1. localStorage (fast, immediate)
   try{ localStorage.setItem('pgq2_state', data); }catch(e){}
@@ -575,6 +610,15 @@ function showCacheRestoreToast(){
 // ══════════════════════════════════════════════════════
 function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
+// ── Smart Shuffle: get topic weight (lower accuracy = higher weight) ──
+function getTopicWeight(topic){
+  const ts = G.topicStats[topic];
+  if(!ts || ts.done < 5) return 2.0; // untouched topics get boost too
+  const acc = ts.correct / ts.done;  // 0.0 to 1.0
+  // acc=0.0 → weight=3.0 (very weak), acc=1.0 → weight=0.5 (strong)
+  return 0.5 + (1 - acc) * 2.5;
+}
+
 function buildQueue(mode, topic=null){
   if(mode==='revision'){
     const due = G.wrongQueue.filter(w=>G.totalDone-w.wrongAt>=40)
@@ -584,7 +628,23 @@ function buildQueue(mode, topic=null){
   }
   let pool = topic ? ALL_MCQ.filter(m=>m.topic===topic) : [...ALL_MCQ];
   const seenSet = new Set(G.seenIds);
-  let fresh = shuffle(pool.filter(m=>!seenSet.has(m.id)));
+  let fresh = pool.filter(m=>!seenSet.has(m.id));
+
+  if(!topic){
+    // Smart Shuffle: build weighted pool — repeat each question by its topic weight
+    const weighted = [];
+    fresh.forEach(q=>{
+      const w = Math.round(getTopicWeight(q.topic));
+      for(let i=0;i<w;i++) weighted.push(q);
+    });
+    fresh = shuffle(weighted);
+    // Deduplicate (keep first occurrence after shuffle)
+    const seen = new Set();
+    fresh = fresh.filter(q=>{ if(seen.has(q.id)) return false; seen.add(q.id); return true; });
+  } else {
+    fresh = shuffle(fresh);
+  }
+
   const dueWrong = G.wrongQueue.filter(w=>G.totalDone-w.wrongAt>=40)
                     .map(w=>ALL_MCQ[w.id]).filter(Boolean);
   // Inject 1 revision every ~10 fresh
@@ -703,6 +763,10 @@ function handleAnswer(idx, chosen){
     else if(letter===correct && !isCorrect){ btn.classList.add('correct'); document.getElementById(`icon-${idx}-${letter}`).textContent='✓'; }
     else { btn.classList.add('dimmed'); }
   });
+
+  // Sound + vibration feedback
+  if(isCorrect) playCorrectSound();
+  else playWrongSound();
 
   // Update session
   if(isCorrect){
@@ -853,9 +917,101 @@ function renderHome(){
 }
 
 // ══════════════════════════════════════════════════════
+// PERFORMANCE GRAPH RENDERER
+// ══════════════════════════════════════════════════════
+function renderPerfGraph(){
+  const log = G.dailyLog || [];
+  const wrap  = document.getElementById('pg-svg-wrap');
+  const empty = document.getElementById('pg-empty');
+  const legend= document.getElementById('pg-legend');
+  const lbls  = document.getElementById('pg-day-labels');
+  if(!wrap) return;
+
+  // Need at least 2 days to draw a line
+  if(log.length < 2){
+    if(empty) empty.style.display='block';
+    return;
+  }
+  if(empty) empty.style.display='none';
+
+  // Take last 7 days
+  const days = log.slice(-7);
+
+  // Build accuracy array (0–100)
+  const accArr = days.map(d=> d.done>0 ? Math.round((d.correct/d.total||d.correct/d.done||0)*100) : 0);
+
+  // SVG dimensions
+  const W = wrap.clientWidth || 280;
+  const H = 110;
+  const padL = 28, padR = 10, padT = 12, padB = 10;
+  const gW = W - padL - padR;
+  const gH = H - padT - padB;
+
+  const minV = 0, maxV = 100;
+  const xStep = gW / Math.max(days.length - 1, 1);
+
+  // Convert to SVG coords
+  const pts = accArr.map((v,i)=>({
+    x: padL + i * xStep,
+    y: padT + gH - ((v - minV) / (maxV - minV)) * gH
+  }));
+
+  // Build smooth path (straight lines — clean & simple)
+  const pathD = pts.map((p,i)=>(i===0?`M${p.x.toFixed(1)},${p.y.toFixed(1)}`:`L${p.x.toFixed(1)},${p.y.toFixed(1)}`)).join(' ');
+
+  // Fill area under line
+  const fillD = pathD + ` L${pts[pts.length-1].x.toFixed(1)},${(padT+gH).toFixed(1)} L${pts[0].x.toFixed(1)},${(padT+gH).toFixed(1)} Z`;
+
+  // Y-axis labels: 0, 50, 100
+  const yLabels = [0,50,100].map(v=>{
+    const y = padT + gH - (v/100)*gH;
+    return `<text x="${padL-4}" y="${y+4}" fill="var(--sub2)" font-size="9" text-anchor="end">${v}</text>
+            <line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--border)" stroke-width="0.8"/>`;
+  }).join('');
+
+  // Dot for each data point
+  const dots = pts.map((p,i)=>{
+    const v = accArr[i];
+    const col = v>=70?'var(--green)':v>=45?'var(--yellow)':'var(--red)';
+    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="${col}" stroke="var(--card)" stroke-width="2"/>
+            <text x="${p.x.toFixed(1)}" y="${(p.y-8).toFixed(1)}" fill="${col}" font-size="9" text-anchor="middle" font-weight="700">${v}%</text>`;
+  }).join('');
+
+  // Trend indicator for legend
+  const latest = accArr[accArr.length-1];
+  const prev   = accArr.length>1 ? accArr[accArr.length-2] : latest;
+  const trend  = latest > prev ? `▲ +${latest-prev}%` : latest < prev ? `▼ ${latest-prev}%` : '→ same';
+  const tCol   = latest > prev ? 'var(--green)' : latest < prev ? 'var(--red)' : 'var(--sub)';
+  if(legend) { legend.textContent = `Today: ${latest}% ${trend}`; legend.style.color = tCol; }
+
+  // Day labels
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  if(lbls) lbls.innerHTML = days.map(d=>{
+    const dt = new Date(d.date);
+    return `<div class="pg-day-lbl">${dayNames[dt.getDay()]}</div>`;
+  }).join('');
+
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    ${yLabels}
+    <defs>
+      <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--blue)" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="var(--blue)" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>
+    <path d="${fillD}" fill="url(#fillGrad)"/>
+    <path d="${pathD}" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  </svg>`;
+
+  wrap.innerHTML = svg;
+}
+
+// ══════════════════════════════════════════════════════
 // STATS RENDER
 // ══════════════════════════════════════════════════════
 function renderStats(){
+  renderPerfGraph();
   document.getElementById('st-total').textContent=G.totalDone;
   document.getElementById('st-correct').textContent=G.totalCorrect;
   document.getElementById('st-wrong').textContent=G.totalDone-G.totalCorrect;
@@ -941,6 +1097,52 @@ function switchTab(tab){
     document.getElementById('nav-stats').classList.add('active');
     renderStats();
   }
+}
+
+// ══════════════════════════════════════════════════════
+// SOUND + VIBRATION (Web Audio API — no files needed)
+// ══════════════════════════════════════════════════════
+let _audioCtx = null;
+function getAudioCtx(){
+  if(!_audioCtx){
+    try{ _audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){}
+  }
+  return _audioCtx;
+}
+
+function playCorrectSound(){
+  const ctx = getAudioCtx(); if(!ctx) return;
+  // Warm ascending chime — two notes, C5 then E5
+  [[523.25, 0, 0.12],[659.25, 0.1, 0.15]].forEach(([freq, delay, dur])=>{
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+    // Soft attack, quick fade
+    gain.gain.setValueAtTime(0, ctx.currentTime + delay);
+    gain.gain.linearRampToValueAtTime(0.18, ctx.currentTime + delay + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + dur);
+    osc.start(ctx.currentTime + delay);
+    osc.stop(ctx.currentTime + delay + dur + 0.05);
+  });
+}
+
+function playWrongSound(){
+  const ctx = getAudioCtx(); if(!ctx) return;
+  // Low dull thud — short descending tone, not harsh
+  const osc  = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(220, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 0.18);
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.25);
+  // Vibrate: short 80ms low-intensity pulse on wrong (Android only, iOS ignores silently)
+  if(navigator.vibrate) navigator.vibrate(80);
 }
 
 // ══════════════════════════════════════════════════════
