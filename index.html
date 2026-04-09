@@ -168,7 +168,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 @keyframes bubbleIn{to{opacity:1;transform:translateY(0) scale(1)}}
 .q-bubble.revision-q{border-color:rgba(240,180,41,0.4);background:linear-gradient(135deg,#1e2c3a,#1e2818);}
 
-.qb-header{display:flex;align-items:center;gap:8px;padding:11px 14px 0;}
+.qb-header{display:flex;align-items:center;gap:8px;padding:11px 14px 0;position:relative;}
+.qb-timer{position:absolute;top:0;right:14px;font-size:12px;font-weight:800;
+  padding:3px 9px;border-radius:20px;min-width:52px;text-align:center;
+  transition:background 0.4s,color 0.4s;letter-spacing:0.3px;
+  background:rgba(61,184,92,0.15);color:var(--green);border:1px solid rgba(61,184,92,0.3);}
+.qb-timer.mid{background:rgba(240,180,41,0.15);color:var(--yellow);border-color:rgba(240,180,41,0.3);}
+.qb-timer.slow{background:rgba(229,83,75,0.15);color:var(--red);border-color:rgba(229,83,75,0.3);}
+.qb-timer.stopped{opacity:0.6;}
 .qb-num{font-size:11px;font-weight:700;color:var(--sub2);background:var(--card2);padding:2px 8px;border-radius:8px;}
 .qb-topic-pill{font-size:10px;color:var(--blue);background:rgba(43,159,234,0.12);padding:2px 8px;border-radius:8px;font-weight:600;}
 .qb-rev-pill{font-size:10px;color:var(--yellow);background:rgba(240,180,41,0.12);padding:2px 8px;border-radius:8px;font-weight:600;}
@@ -361,7 +368,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
       <div class="qhs"><div class="qhs-num qhs-g" id="qs-correct">0</div><div class="qhs-lbl">Correct</div></div>
       <div class="qhs"><div class="qhs-num qhs-r" id="qs-wrong">0</div><div class="qhs-lbl">Wrong</div></div>
       <div class="qhs"><div class="qhs-num qhs-b" id="qs-acc">0%</div><div class="qhs-lbl">Accuracy</div></div>
-      <div class="qhs"><div class="qhs-num qhs-y" id="qs-streak">0🔥</div><div class="qhs-lbl">Streak</div></div>
+      <div class="qhs"><div class="qhs-num qhs-y" id="qs-timer">—</div><div class="qhs-lbl">Avg/Ques</div></div>
     </div>
   </div>
   <div id="feed"></div>
@@ -660,7 +667,8 @@ function buildQueue(mode, topic=null){
 // ══════════════════════════════════════════════════════
 function startQuiz(mode, topic=null){
   S = { queue:buildQueue(mode,topic), idx:0, correct:0, wrong:0,
-        streak:0, bestStreak:0, mode, topic, feedCount:0, sessionWrong:[] };
+        streak:0, bestStreak:0, mode, topic, feedCount:0, sessionWrong:[],
+        startTime: Date.now(), totalAnswerMs:0, questionShownAt: Date.now(), currentTimer:null };
   if(!S.queue.length){ alert('No questions available!'); return; }
   
   document.getElementById('feed').innerHTML='';
@@ -680,6 +688,27 @@ function appendNextQuestion(){
   const q = S.queue[S.idx];
   renderBubble(q, S.idx);
   S.feedCount++;
+  S.questionShownAt = Date.now();  // start clock when question appears
+
+  // Clear any previous interval
+  if(S.currentTimer) clearInterval(S.currentTimer);
+
+  // Live countdown inside bubble top-right
+  S.currentTimer = setInterval(()=>{
+    const el = document.getElementById(`qtimer-${S.idx}`);
+    if(!el){ clearInterval(S.currentTimer); return; }
+    const sec = Math.floor((Date.now() - S.questionShownAt) / 1000);
+    if(sec < 7){
+      el.textContent = '🚀 ' + sec + 's';
+      el.className = 'qb-timer';
+    } else if(sec <= 15){
+      el.textContent = '🙂 ' + sec + 's';
+      el.className = 'qb-timer mid';
+    } else {
+      el.textContent = '🐢 ' + sec + 's';
+      el.className = 'qb-timer slow';
+    }
+  }, 1000);
   
   // Update header
   document.getElementById('qh-badge').textContent = `Q ${S.idx+1}`;
@@ -708,6 +737,7 @@ function renderBubble(q, idx){
       <div class="qb-num">Q${idx+1}</div>
       <div class="qb-topic-pill">${escH(q.topic)}</div>
       ${isRevision?'<div class="qb-rev-pill">🔄 Revision</div>':''}
+      <div class="qb-timer" id="qtimer-${idx}">🚀 0s</div>
     </div>
     <div class="qb-text">${escH(q.q)}</div>
     <div class="qb-opts" id="opts-${idx}">
@@ -748,6 +778,11 @@ function handleAnswer(idx, chosen){
   const opts = document.querySelectorAll(`#opts-${idx} .opt-btn`);
   if(!opts.length || opts[0].disabled) return;
   answering = true;
+
+  // Stop the live timer — freeze it on final time
+  if(S.currentTimer){ clearInterval(S.currentTimer); S.currentTimer = null; }
+  const el = document.getElementById(`qtimer-${idx}`);
+  if(el) el.classList.add('stopped');
 
   const isCorrect = chosen === correct;
 
@@ -800,6 +835,9 @@ function handleAnswer(idx, chosen){
     const wi2=G.wrongQueue.findIndex(w=>w.id===q.id);
     if(wi2>-1) G.wrongQueue.splice(wi2,1);
   }
+  // True thinking time: from when question appeared to when user tapped
+  S.totalAnswerMs += (Date.now() - S.questionShownAt);
+
   saveG();
   updateQStats();
 
@@ -817,11 +855,22 @@ function handleAnswer(idx, chosen){
 }
 
 function updateQStats(){
-  const done = S.correct+S.wrong;
+  const done = S.correct + S.wrong;
   document.getElementById('qs-correct').textContent = S.correct;
-  document.getElementById('qs-wrong').textContent = S.wrong;
-  document.getElementById('qs-acc').textContent = done ? Math.round(S.correct/done*100)+'%' : '0%';
-  document.getElementById('qs-streak').textContent = S.streak+'🔥';
+  document.getElementById('qs-wrong').textContent   = S.wrong;
+  document.getElementById('qs-acc').textContent     = done ? Math.round(S.correct/done*100)+'%' : '0%';
+
+  // Avg time per question
+  const timerEl = document.getElementById('qs-timer');
+  if(timerEl){
+    if(done === 0){
+      timerEl.textContent = '—';
+    } else {
+      const avgSec = Math.round(S.totalAnswerMs / done / 1000);
+      const emoji  = avgSec < 7 ? '🚀' : avgSec <= 15 ? '🙂' : '🐢';
+      timerEl.textContent = avgSec + 's ' + emoji;
+    }
+  }
 }
 
 function appendSessionEnd(){
@@ -835,6 +884,8 @@ function appendSessionEnd(){
 
   const div = document.createElement('div');
   div.className='session-end-card';
+  const avgSec = done>0 ? Math.round(S.totalAnswerMs/done/1000) : 0;
+  const tEmoji = avgSec<7?'🚀':avgSec<=15?'🙂':'🐢';
   div.innerHTML=`
     <div class="sec-emoji">${emoji}</div>
     <div class="sec-title">${title}</div>
@@ -843,6 +894,7 @@ function appendSessionEnd(){
       <div class="sec-score"><div class="sec-score-num qhs-g">${S.correct}</div><div class="sec-score-lbl">Correct</div></div>
       <div class="sec-score"><div class="sec-score-num qhs-r">${S.wrong}</div><div class="sec-score-lbl">Wrong</div></div>
       <div class="sec-score"><div class="sec-score-num qhs-b">${pct}%</div><div class="sec-score-lbl">Accuracy</div></div>
+      <div class="sec-score"><div class="sec-score-num qhs-y">${avgSec}s ${tEmoji}</div><div class="sec-score-lbl">Avg/Ques</div></div>
     </div>
     <div class="sec-btn-row">
       <button class="sec-btn btn-p" onclick="startQuiz('${S.mode}','${S.topic||''}')">🔄 Again</button>
@@ -855,6 +907,7 @@ function appendSessionEnd(){
 
 function exitQuiz(){
   if(S.correct+S.wrong>0 && !confirm('Exit quiz?')) return;
+  if(S.currentTimer){ clearInterval(S.currentTimer); S.currentTimer=null; }
   switchTab('home');
 }
 
