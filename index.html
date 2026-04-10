@@ -171,11 +171,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 .qb-header{display:flex;align-items:center;gap:8px;padding:11px 14px 0;position:relative;}
 .qb-timer{position:absolute;top:0;right:14px;font-size:12px;font-weight:800;
   padding:3px 9px;border-radius:20px;min-width:52px;text-align:center;
-  transition:background 0.4s,color 0.4s;letter-spacing:0.3px;
+  transition:background 0.4s,color 0.4s,border-color 0.4s;letter-spacing:0.3px;
   background:rgba(61,184,92,0.15);color:var(--green);border:1px solid rgba(61,184,92,0.3);}
+.qb-timer.grey{background:rgba(122,142,158,0.12);color:var(--sub);border-color:rgba(122,142,158,0.25);}
 .qb-timer.mid{background:rgba(240,180,41,0.15);color:var(--yellow);border-color:rgba(240,180,41,0.3);}
 .qb-timer.slow{background:rgba(229,83,75,0.15);color:var(--red);border-color:rgba(229,83,75,0.3);}
-.qb-timer.stopped{opacity:0.6;}
+.qb-timer.stopped{opacity:0.55;}
 .qb-num{font-size:11px;font-weight:700;color:var(--sub2);background:var(--card2);padding:2px 8px;border-radius:8px;}
 .qb-topic-pill{font-size:10px;color:var(--blue);background:rgba(43,159,234,0.12);padding:2px 8px;border-radius:8px;font-weight:600;}
 .qb-rev-pill{font-size:10px;color:var(--yellow);background:rgba(240,180,41,0.12);padding:2px 8px;border-radius:8px;font-weight:600;}
@@ -698,13 +699,20 @@ function appendNextQuestion(){
     const el = document.getElementById(`qtimer-${S.idx}`);
     if(!el){ clearInterval(S.currentTimer); return; }
     const sec = Math.floor((Date.now() - S.questionShownAt) / 1000);
-    if(sec < 7){
+    if(sec <= 15){
+      // Reading zone — grey, no pressure
+      el.textContent = '⏳ ' + sec + 's';
+      el.className = 'qb-timer grey';
+    } else if(sec <= 25){
+      // Good pace — green rocket
       el.textContent = '🚀 ' + sec + 's';
       el.className = 'qb-timer';
-    } else if(sec <= 15){
+    } else if(sec <= 35){
+      // Getting slow — yellow
       el.textContent = '🙂 ' + sec + 's';
       el.className = 'qb-timer mid';
     } else {
+      // Too slow — red turtle
       el.textContent = '🐢 ' + sec + 's';
       el.className = 'qb-timer slow';
     }
@@ -737,7 +745,7 @@ function renderBubble(q, idx){
       <div class="qb-num">Q${idx+1}</div>
       <div class="qb-topic-pill">${escH(q.topic)}</div>
       ${isRevision?'<div class="qb-rev-pill">🔄 Revision</div>':''}
-      <div class="qb-timer" id="qtimer-${idx}">🚀 0s</div>
+      <div class="qb-timer grey" id="qtimer-${idx}">⏳ 0s</div>
     </div>
     <div class="qb-text">${escH(q.q)}</div>
     <div class="qb-opts" id="opts-${idx}">
@@ -835,8 +843,12 @@ function handleAnswer(idx, chosen){
     const wi2=G.wrongQueue.findIndex(w=>w.id===q.id);
     if(wi2>-1) G.wrongQueue.splice(wi2,1);
   }
-  // True thinking time: from when question appeared to when user tapped
-  S.totalAnswerMs += (Date.now() - S.questionShownAt);
+  // Avg timer: only count time above 15s (ignore reading window)
+  // If answered within 15s → contribute 0 to avg (pure reading time, not thinking time)
+  const rawMs = Date.now() - S.questionShownAt;
+  const READING_WINDOW_MS = 15000;  // 15s grey zone excluded
+  const thinkingMs = Math.max(0, rawMs - READING_WINDOW_MS);
+  S.totalAnswerMs += thinkingMs;
 
   saveG();
   updateQStats();
@@ -867,8 +879,14 @@ function updateQStats(){
       timerEl.textContent = '—';
     } else {
       const avgSec = Math.round(S.totalAnswerMs / done / 1000);
-      const emoji  = avgSec < 7 ? '🚀' : avgSec <= 15 ? '🙂' : '🐢';
-      timerEl.textContent = avgSec + 's ' + emoji;
+      if(avgSec === 0){
+        // All answers within reading window — show neutral
+        timerEl.textContent = '⏳ fast';
+      } else {
+        // avgSec here is time ABOVE 15s baseline
+        const emoji = avgSec <= 10 ? '🚀' : avgSec <= 20 ? '🙂' : '🐢';
+        timerEl.textContent = avgSec + 's ' + emoji;
+      }
     }
   }
 }
